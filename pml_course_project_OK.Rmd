@@ -1,0 +1,114 @@
+---
+title: "Machine Learning Course Project"
+author: "Norma Ruiz"
+date: "20-oct-2015"
+output: html_document
+---
+
+## Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. In this project the goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 differente ways. The goal is to predict the manner in which they did the exercise. This is the "classe" variable in the training set, which can take the values: A, B, C, D, E, with the meanings:  
+- Class A = exactly according to the specification  
+- Class B = throwing the elbows to the front  
+- Class C = lifting the dumbbell only halfway  
+- Class D = lowering the dumbbell only halfway  
+- Class E = throwing the hips to the front  
+Source: Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedins of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13). Stuttgart, Germany: ACM SIGCHI, 2013.  
+The results of these measurements were collected in a dataset with 160 variables and 19,622 observations. I will use this data to build a model capable of determine how well the exercise was done (variable "classe"). There is another dataset with 20 observations (without the classe variable) that I will use to apply my model to predict the class.
+
+## PreProcessing
+
+Read the data
+
+```{r read_data} 
+library(caret)
+setwd("~/Documents/NRS_iMAC/norma_2015/infomedia/data science/8 Practical Machine Learning/course project")
+pmltrain <- read.csv("pml-training.csv",na.strings=c("","NA","#DIV/0!"))
+pmltest  <- read.csv("pml-testing.csv", na.strings=c("","NA","#DIV/0!"))
+```
+
+During the exploratory data analysis I discovered that there are many missing values, so I will exclude those columns having more than 10% of missing values. I will also exclude columns with an absolute correlation factor > 0.9, Finally I exclude the first 7 columns of the data since they are irrelevant for the prediction purposes. After this reduction, there are 45 predictor variables available for the analysis, plus the response variable **classe**.
+
+Split the data: training set and test set for my model.
+
+```{r remove cols train & split data: train/test } 
+dim(pmltrain)
+na_count <- apply(pmltrain, 2, function(x) sum(is.na(x))) 
+cols <- names(which(na_count/dim(pmltrain[1])< 0.1, arr.ind=T)) 
+train_new <- pmltrain[,cols] 
+train_new <- train_new[, -(1:7)] 
+train_cor <- cor(subset(train_new, select = -classe)) 
+high_corr  <- findCorrelation(train_cor, cutoff=0.9) 
+train_new <- train_new[, -high_corr] 
+dim(train_new)
+inTrain = createDataPartition(train_new$classe,p=3/4)[[1]]
+trn  <- train_new[ inTrain,] # 75% para entrenar
+tst  <- train_new[-inTrain,] # 25% para probar
+dim(trn)
+dim(tst)
+```
+
+## Variable Selection
+
+I built a model using **random forest** to select the 20 most important predictor variables, in order to have a simple model.  
+
+```{r variable_selection} 
+library(doMC)
+registerDoMC(cores=3)
+model_rf <- train(classe ~ ., data=trn, method="rf")
+varImpPlot(model_rf$finalModel, main="Average Importance plot",
+           col="blue", pch =19, cex=0.9)
+top20 <- varImp(model_rf)[[1]] 
+x <- order(-top20$Overall) 
+top20vars <- row.names(top20)[x][1:20] 
+trn20 <- cbind(trn[,top20vars], trn$classe) 
+names(trn20)[21] <- "classe"  
+```
+
+## Training
+
+Lets train 2 different models using the training data with 20 predictor variables: boosting(gbm) and random forest(rf). The accuracy for each model is: boosting accuracy=0.9492; random forest accuracy=0.99 (this numbers can change a little bit each next execution). 
+
+```{r training} 
+# first model - boosting
+train_gbm <- train(classe ~ ., data=trn20, method="gbm", verbose=F)
+pred_gbm  <- predict(train_gbm, newdata=tst)
+confusionMatrix(pred_gbm, tst$classe) 
+# second model - random forest
+train_rf  <- train(classe ~ ., data=trn20, method="rf")
+pred_rf   <- predict(train_rf, newdata=tst)
+confusionMatrix(pred_rf, tst$classe)
+```
+
+## Combining models
+
+Finally, I combined both models fitting a model that combine the predictors using the training data. Lets measure the accuracy of this combined model using the test data: combined accuracy=0.9904 (this number can change a little bit each execution).
+
+```{r combinig_models} 
+pred_gbm     <- predict(train_gbm, newdata=trn)
+pred_rf      <- predict(train_rf, newdata=trn)
+trn_dat_comb <- data.frame(GBM=pred_gbm,RF=pred_rf,classe=trn$classe) 
+train_comb   <- train(classe ~ ., method="rf",data=trn_dat_comb) 
+pred_gbm     <- predict(train_gbm, newdata=tst)
+pred_rf      <- predict(train_rf, newdata=tst)
+tst_dat_comb <- data.frame(GBM=pred_gbm,RF=pred_rf,classe=tst$classe)
+pred_comb    <- predict(train_comb, newdata=tst_dat_comb)
+confusionMatrix(pred_comb, tst$classe) 
+```
+
+## Conclusion
+
+Since the combined model has the same accuracy as the random forest I will choose the random forest model since it is simpler than the combined model.
+
+```{r conclusion} 
+head(getTree(train_rf$finalModel, k=1, labelVar=T))
+head(getTree(train_rf$finalModel, k=2, labelVar=T))
+library(inTrees)
+treeList <- RF2List(train_rf$finalModel)
+exec <- extractRules(treeList, trn20)
+ruleMetric <- getRuleMetric(exec, trn20, trn20$classe)
+ruleMetric <- pruneRule(ruleMetric, trn20, trn20$classe)
+ruleMetric <- selectRuleRRF(ruleMetric, trn20, trn20$classe)
+rules <- presentRules(ruleMetric,colnames(trn20))
+head(rules)
+```
